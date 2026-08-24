@@ -1,11 +1,14 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import { runScheduler } from "./scheduler";
 
 type RuntimeEnv = CloudflareEnv & {
   ASSETS: Fetcher;
   SMARTCAR_STORAGE_KEY?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -89,15 +92,45 @@ async function authorizeRequest(
   if (env.REQUIRE_CLOUDFLARE_ACCESS !== "true") {
     return new Request(request, { headers });
   }
-  if (!ctx.access) {
-    return new Response("Cloudflare Access er påkrævet", { status: 403 });
+  let email: string | undefined;
+  let name: string | undefined;
+
+  if (ctx.access) {
+    const identity = await ctx.access.getIdentity();
+    email = identity?.email?.trim().toLowerCase();
+    name = identity?.name;
+  } else {
+    // Workers with Static Assets execute behind an internal router Worker.
+    // Cloudflare currently does not forward ctx.access through that router,
+    // so validate the Access JWT on the original request instead.
+    const token = request.headers.get("cf-access-jwt-assertion");
+    const teamDomain = normalizeTeamDomain(env.ACCESS_TEAM_DOMAIN);
+    if (!token || !teamDomain || !env.ACCESS_AUD) {
+      return new Response("Cloudflare Access-konfiguration mangler", { status: 403 });
+    }
+    try {
+      const jwks = createRemoteJWKSet(new URL(`${teamDomain}/cdn-cgi/access/certs`));
+      const { payload } = await jwtVerify(token, jwks, {
+        issuer: teamDomain,
+        audience: env.ACCESS_AUD,
+      });
+      email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : undefined;
+      name = typeof payload.name === "string" ? payload.name : undefined;
+    } catch {
+      return new Response("Cloudflare Access-tokenet kunne ikke valideres", { status: 403 });
+    }
   }
-  const identity = await ctx.access.getIdentity();
-  const email = identity?.email?.trim().toLowerCase();
+
   if (!email || email !== env.OWNER_EMAIL.trim().toLowerCase()) {
     return new Response("Du har ikke adgang til Elroqblik", { status: 403 });
   }
   headers.set(AUTH_EMAIL_HEADER, email);
-  if (identity?.name) headers.set(AUTH_NAME_HEADER, identity.name);
+  if (name) headers.set(AUTH_NAME_HEADER, name);
   return new Request(request, { headers });
+}
+
+function normalizeTeamDomain(value?: string): string | undefined {
+  const trimmed = value?.trim().replace(/\/$/, "");
+  if (!trimmed) return undefined;
+  return trimmed.startsWith("https://") ? trimmed : `https://${trimmed}`;
 }
