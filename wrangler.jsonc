@@ -14,7 +14,9 @@
   ],
   "vars": {
     "OWNER_EMAIL": "nicolajbach12@gmail.com",
-    "REQUIRE_CLOUDFLARE_ACCESS": "true"
+    "REQUIRE_CLOUDFLARE_ACCESS": "true",
+    "ACCESS_TEAM_DOMAIN": "https://boholts-familie.cloudflareaccess.com",
+    "ACCESS_AUD": "f905646fe1311a4085083b9f1cde31e862a0bf15cf0942a8a7a2efbcdf3ea660"
   },
   "triggers": {
     "crons": ["*/30 * * * *"]
