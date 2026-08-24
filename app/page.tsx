@@ -26,6 +26,7 @@ type VehicleState = {
   configured: boolean;
   connected: boolean;
   provider?: "smartcar" | "myskoda";
+  stale?: boolean;
   updatedAt?: string;
   error?: string;
   vehicle?: {
@@ -86,6 +87,7 @@ export default function Home() {
   const [updatedAt, setUpdatedAt] = useState<string>("");
   const [vehicleState, setVehicleState] = useState<VehicleState>({ configured: false, connected: false });
   const [vehicleLoading, setVehicleLoading] = useState(true);
+  const [vehicleLoadError, setVehicleLoadError] = useState("");
   const [mySkodaEmail, setMySkodaEmail] = useState("");
   const [mySkodaPassword, setMySkodaPassword] = useState("");
   const [setupState, setSetupState] = useState<"idle" | "saving" | "error">("idle");
@@ -99,6 +101,7 @@ export default function Home() {
   const [chargeType, setChargeType] = useState<"home" | "public">("home");
   const [chargePlace, setChargePlace] = useState("");
   const [historyImporting, setHistoryImporting] = useState(false);
+  const [mySkodaHistorySyncing, setMySkodaHistorySyncing] = useState(false);
   const [historyImportMessage, setHistoryImportMessage] = useState("");
   const cleverMonthlyDkk = 799;
   const [comparisonPeriod, setComparisonPeriod] = useState<"month" | "year">("month");
@@ -188,11 +191,25 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/vehicle")
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
+    fetch("/api/vehicle", { cache: "no-store", signal: controller.signal })
       .then((response) => response.json())
-      .then((data: VehicleState) => setVehicleState(data))
-      .catch(() => setVehicleState({ configured: false, connected: false }))
-      .finally(() => setVehicleLoading(false));
+      .then((data: VehicleState) => {
+        setVehicleState(data);
+        setVehicleLoadError(data.error ?? "");
+      })
+      .catch((error) => setVehicleLoadError(error instanceof DOMException && error.name === "AbortError"
+        ? "MyŠkoda svarede ikke inden for 20 sekunder. Forbindelsen er ikke slettet."
+        : "Bildata kunne ikke hentes. Forbindelsen er ikke slettet."))
+      .finally(() => {
+        window.clearTimeout(timeout);
+        setVehicleLoading(false);
+      });
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   }, []);
 
   async function connectMySkoda(event: React.FormEvent<HTMLFormElement>) {
@@ -223,9 +240,16 @@ export default function Home() {
 
   async function refreshVehicle() {
     setVehicleLoading(true);
+    setVehicleLoadError("");
     try {
-      const response = await fetch("/api/vehicle", { cache: "no-store" });
-      setVehicleState(await response.json() as VehicleState);
+      const response = await fetch("/api/vehicle", { cache: "no-store", signal: AbortSignal.timeout(20_000) });
+      const data = await response.json() as VehicleState;
+      setVehicleState(data);
+      setVehicleLoadError(data.error ?? "");
+    } catch (error) {
+      setVehicleLoadError(error instanceof DOMException && error.name === "TimeoutError"
+        ? "MyŠkoda svarede ikke inden for 20 sekunder. Prøv igen om lidt."
+        : "Bildata kunne ikke opdateres lige nu.");
     } finally {
       setVehicleLoading(false);
     }
@@ -276,6 +300,28 @@ export default function Home() {
       setHistoryImportMessage(error instanceof Error ? error.message : "Historikken kunne ikke indlæses");
     } finally {
       setHistoryImporting(false);
+    }
+  }
+
+  async function syncMySkodaChargingHistory() {
+    setMySkodaHistorySyncing(true);
+    setHistoryImportMessage("");
+    try {
+      const response = await fetch("/api/charging/myskoda", { method: "POST" });
+      const data = await response.json() as { imported?: number; found?: number; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "MyŠkoda-ladehistorikken kunne ikke hentes");
+      const refreshed = await fetch("/api/charging", { cache: "no-store" });
+      if (!refreshed.ok) throw new Error("Historikken blev gemt, men visningen kunne ikke opdateres");
+      setCharging(await refreshed.json() as ChargingState);
+      setHistoryImportMessage(data.imported
+        ? `${data.imported} nye opladninger blev hentet fra MyŠkoda`
+        : data.found
+          ? "MyŠkoda-historikken er allerede ajour"
+          : "MyŠkoda returnerede ingen afsluttede opladninger for i år");
+    } catch (error) {
+      setHistoryImportMessage(error instanceof Error ? error.message : "MyŠkoda-ladehistorikken kunne ikke hentes");
+    } finally {
+      setMySkodaHistorySyncing(false);
     }
   }
 
@@ -429,6 +475,8 @@ export default function Home() {
           <section className="recent"><div className="section-title"><div><p className="eyebrow">KØRSELSHISTORIK</p><h2>{history?.status === "estimated" ? "Dit beregnede forbrug" : "Indsamling er startet"}</h2></div><button className="text-btn" onClick={() => setTab("bil")}>Se bildata <Icon name="arrow" /></button></div><div className="history-message"><span className="history-icon">↗</span><div><strong>{history?.status === "estimated" ? `${vehicleState.vehicle?.efficiencyKmPerKwh?.toFixed(2).replace(".", ",")} km/kWh` : "Kør en tur og hent derefter friske bildata"}</strong><p>{history?.status === "estimated" ? "Estimatet beregnes ud fra ændringen i kilometerstand og batteriprocent. Faktiske lade-kWh fra Clever vil senere gøre tallet mere præcist." : "Ladeoverblikket har gemt den første måling. Når kilometerstanden og batteriet ændrer sig, kan vi begynde at beregne dit forbrug."}</p></div></div></section>
         </>}
 
+        {tab === "ladning" && vehicleState.connected && vehicleState.provider === "myskoda" && <div className="history-import myskoda-import"><div className="history-import-icon"><Icon name="car" /></div><div><p className="eyebrow">MYŠKODA · AUTOMATISK</p><h2>Hent bilens ladehistorik</h2><p>Synkroniseres automatisk kl. 05 og 23. AC registreres foreløbigt som formodet hjemme; DC som offentlig opladning.</p></div><button className="connect-button" onClick={syncMySkodaChargingHistory} disabled={mySkodaHistorySyncing}>{mySkodaHistorySyncing ? "Henter…" : "Synkronisér nu"}</button></div>}
+
         {tab === "ladning" && <section className="tab-page"><div className="section-title"><div><p className="eyebrow">CLEVER-REGNSKAB</p><h1>Dine opladninger</h1><p className="subline">Registrér kWh fra Clever-appen. Tallene gemmes sikkert og bruges i dit regnskab.</p></div><button className="primary small" onClick={() => setShowChargeForm(!showChargeForm)}><Icon name="plus" /> {showChargeForm ? "Luk" : "Tilføj opladning"}</button></div>{!hasImportedHistory && <div className="history-import"><div className="history-import-icon"><Icon name="bolt" /></div><div><p className="eyebrow">CLEVER-HISTORIK FUNDET</p><h2>Indlæs hele årsoversigten</h2><p>49 opladninger · 1.336,6 kWh · 25. april–16. august. Din hjemmeadresse vises kun som “Hjemme”.</p></div><button className="connect-button" onClick={importCleverHistory} disabled={historyImporting}>{historyImporting ? "Indlæser…" : "Indlæs historikken"}</button></div>}{historyImportMessage && <div className={`import-message ${historyImportMessage.includes("kunne ikke") ? "error" : ""}`}>{historyImportMessage}</div>}{showChargeForm && <form className="charge-form" onSubmit={saveChargingSession}><label>Dato og tid<input required type="datetime-local" value={chargeDate} onChange={event => setChargeDate(event.target.value)} /></label><label>Energi<input required inputMode="decimal" value={chargeKwh} onChange={event => setChargeKwh(event.target.value)} placeholder="fx 31,4" /><b>kWh</b></label><label>Sted<select value={chargeType} onChange={event => setChargeType(event.target.value as "home" | "public")}><option value="home">Hjemme</option><option value="public">Offentlig lader</option></select></label><label>Navn <small>(valgfrit)</small><input value={chargePlace} onChange={event => setChargePlace(event.target.value)} placeholder={chargeType === "home" ? "Hjemme" : "fx Clever Aarhus N"} /></label><button className="connect-button" disabled={chargeSaving}>{chargeSaving ? "Gemmer…" : "Gem opladning"}</button>{chargeError && <div className="form-error">{chargeError}</div>}</form>}<div className="summary-strip"><div><span>Denne måned</span><strong>{formatNumber(chargeSummary?.totalKwh ?? 0, 1)} kWh</strong></div><div><span>Hjemme</span><strong>{formatNumber(homeShare, 0)} %</strong></div><div><span>Offentligt</span><strong>{formatNumber(publicShare, 0)} %</strong></div><div><span>År i alt</span><strong>{formatNumber(chargeSummary?.annualTotalKwh ?? 0, 2)} kWh</strong></div></div>{charging.sessions.length ? <div className="session-list large">{charging.sessions.map((session) => <Session s={session} onDelete={() => removeChargingSession(session.id)} key={session.id} />)}</div> : <div className="empty-state"><span>ϟ</span><h2>Ingen opladninger endnu</h2><p>Indlæs årsoversigten ovenfor, eller tilføj en opladning manuelt.</p><button className="secondary" onClick={importCleverHistory} disabled={historyImporting}>Indlæs 49 opladninger</button></div>}<div className="notice">ⓘ Clever tilbyder ikke en offentlig privatkunde-API. Historikken er aflæst fra dine skærmbilleder og kan indlæses uden at dele dit Clever-login.</div></section>}
 
         {tab === "oekonomi" && <section className="tab-page">
@@ -508,11 +556,12 @@ export default function Home() {
               <div className={`connection-orb ${vehicleState.provider === "myskoda" && vehicleState.connected ? "connected" : ""}`}><Icon name="car" /></div>
               <div>
                 {vehicleState.provider === "myskoda" && vehicleState.connected ? <>
-                  <p className="eyebrow">MYŠKODA · LIVE DATA</p><h2>Din Elroq er forbundet gratis</h2>
+                  <p className="eyebrow">{vehicleState.stale ? "MYŠKODA · SENEST GEMTE DATA" : "MYŠKODA · LIVE DATA"}</p><h2>Din Elroq er stadig forbundet</h2>
                   <p>Dashboardet henter batteri, rækkevidde og kilometerstand direkte fra MyŠkoda og gemmer målepunkter, så dit kørselsforbrug kan beregnes over tid.</p>
+                  {(vehicleState.stale || vehicleLoadError) && <div className="connection-warning" role="status"><strong>Forbindelsen er gemt</strong>{vehicleLoadError || "MyŠkoda kunne ikke opdateres lige nu. De senest gemte bildata vises."}</div>}
                   <div className="connected-details"><span>Batteri <strong>{vehicleState.vehicle?.batteryPercent == null ? "Ikke tilgængelig" : `${Math.round(vehicleState.vehicle.batteryPercent)} %`}</strong></span><span>Rækkevidde <strong>{vehicleState.vehicle?.rangeKm == null ? "Ikke tilgængelig" : `${Math.round(vehicleState.vehicle.rangeKm)} km`}</strong></span><span>Kilometerstand <strong>{vehicleState.vehicle?.odometerKm == null ? "Ikke tilgængelig" : `${Math.round(vehicleState.vehicle.odometerKm).toLocaleString("da-DK")} km`}</strong></span></div>
                   <div className="connection-actions"><button className="secondary" type="button" onClick={refreshVehicle} disabled={vehicleLoading}>{vehicleLoading ? "Henter…" : "Hent friske bildata"}</button><span className="snapshot-count">{history?.samples ?? 0} målepunkter gemt</span><button className="text-btn danger" type="button" onClick={removeMySkoda}>Fjern MyŠkoda-forbindelse</button></div>
-                </> : !vehicleLoading && <>
+                </> : vehicleLoading ? <div className="connection-loading" role="status"><span /><strong>Kontrollerer MyŠkoda-forbindelsen…</strong><small>Det kan tage nogle sekunder, hvis bilen eller MyŠkoda er i dvale.</small></div> : vehicleLoadError ? <div className="connection-retry" role="alert"><p className="eyebrow">MIDLERTIDIG FORBINDELSESFEJL</p><h2>Din forbindelse er ikke blevet slettet</h2><p>{vehicleLoadError}</p><button className="secondary" type="button" onClick={refreshVehicle}>Prøv igen</button></div> : <>
                   <p className="eyebrow">GRATIS · ANBEFALET</p><h2>Log ind én gang med MyŠkoda</h2>
                   <form className="credential-form" onSubmit={connectMySkoda} autoComplete="off">
                     <p>Oplysningerne sendes direkte fra dit private dashboard til Volkswagens login. Adgangskoden bruges kun til at oprette forbindelsen og bliver ikke gemt.</p>
@@ -538,7 +587,8 @@ export default function Home() {
 
 function Session({s,onDelete}:{s:ChargingSession;onDelete:()=>void}) {
   const date = new Date(s.chargedAt);
-  return <div className="session"><div className={`session-icon ${s.locationType === "home" ? "home" : "fast"}`}><Icon name={s.locationType === "home" ? "home" : "pin"} /></div><div className="session-main"><strong>{s.locationName}</strong><span>{date.toLocaleDateString("da-DK", { day:"numeric", month:"short" })} · {date.toLocaleTimeString("da-DK", { hour:"2-digit", minute:"2-digit" })} · {s.locationType === "home" ? "Clever hjemme" : "Clever ude"}</span></div><div><strong>{formatNumber(s.energyKwh, 1)} kWh</strong><span>registreret</span></div><button className="session-delete" onClick={onDelete} aria-label={`Slet opladning fra ${s.locationName}`}>Slet</button></div>;
+  const source = s.id.startsWith("myskoda:") ? "MyŠkoda" : "Clever";
+  return <div className="session"><div className={`session-icon ${s.locationType === "home" ? "home" : "fast"}`}><Icon name={s.locationType === "home" ? "home" : "pin"} /></div><div className="session-main"><strong>{s.locationName}</strong><span>{date.toLocaleDateString("da-DK", { day:"numeric", month:"short" })} · {date.toLocaleTimeString("da-DK", { hour:"2-digit", minute:"2-digit" })} · {source}</span></div><div><strong>{formatNumber(s.energyKwh, 1)} kWh</strong><span>registreret</span></div><button className="session-delete" onClick={onDelete} aria-label={`Slet opladning fra ${s.locationName}`}>Slet</button></div>;
 }
 
 function formatNumber(value: number, digits: number) { return value.toLocaleString("da-DK", { minimumFractionDigits: digits, maximumFractionDigits: digits }); }

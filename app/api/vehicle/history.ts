@@ -44,6 +44,12 @@ type SnapshotRow = {
   odometer_km: number | null;
 };
 
+type LatestSnapshotRow = SnapshotRow & {
+  provider: string;
+  range_km: number | null;
+  charge_state: string | null;
+};
+
 const ELROQ_USABLE_BATTERY_KWH = 59;
 
 export async function recordVehicleSnapshot(ownerEmail: string, provider: string, vehicle: SnapshotVehicle) {
@@ -107,6 +113,32 @@ export async function getDrivingHistory(ownerEmail: string): Promise<DrivingHist
     efficiencyKmPerKwh: hasEstimate ? distanceKm / energyKwh : null,
     firstCapturedAt: rows[0] ? new Date(rows[0].captured_at).toISOString() : null,
     lastCapturedAt: rows.at(-1) ? new Date(rows.at(-1)!.captured_at).toISOString() : null,
+  };
+}
+
+export async function getLatestVehicleSnapshot(ownerEmail: string) {
+  await ensureSnapshotTable();
+  const row = await database().prepare(`SELECT provider, captured_at, battery_percent, range_km, odometer_km, charge_state
+    FROM vehicle_snapshots WHERE owner_email = ? ORDER BY captured_at DESC LIMIT 1`)
+    .bind(ownerEmail).first<LatestSnapshotRow>();
+  if (!row) return null;
+  return {
+    provider: row.provider,
+    capturedAt: new Date(row.captured_at).toISOString(),
+    vehicle: {
+      make: "Škoda",
+      model: "Elroq",
+      batteryPercent: row.battery_percent,
+      rangeKm: row.range_km,
+      odometerKm: row.odometer_km,
+      chargeState: row.charge_state,
+      dataComplete: row.battery_percent != null && row.range_km != null && row.odometer_km != null,
+      missingSignals: [
+        row.battery_percent == null ? "Batteriniveau" : null,
+        row.range_km == null ? "Rækkevidde" : null,
+        row.odometer_km == null ? "Kilometerstand" : null,
+      ].filter((value): value is string => value !== null),
+    },
   };
 }
 

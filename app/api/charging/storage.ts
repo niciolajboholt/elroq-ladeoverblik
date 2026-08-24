@@ -20,6 +20,12 @@ const TABLE_SQL = `CREATE TABLE IF NOT EXISTS charging_sessions (
 
 const INDEX_SQL = `CREATE INDEX IF NOT EXISTS charging_sessions_owner_date_idx
   ON charging_sessions (owner_email, charged_at)`;
+const COPENHAGEN_DAY_FORMAT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Copenhagen",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 
 export type ChargingSession = {
   id: string;
@@ -69,6 +75,31 @@ export async function importChargingSessions(ownerEmail: string, inputs: Array<O
   return additions.length;
 }
 
+export async function importExternalChargingSessions(ownerEmail: string, inputs: ChargingSession[]) {
+  await ensureTable();
+  if (!inputs.length) return 0;
+  const uniqueInputs = [...new Map(inputs.map(input => [input.id, input])).values()];
+  const existing = await listChargingSessions(ownerEmail);
+  const existingIds = new Set(existing.map(input => input.id));
+  const additions = uniqueInputs.filter(input =>
+    !existingIds.has(input.id) && !existing.some(stored => likelySameChargingSession(stored, input)),
+  );
+  if (!additions.length) return 0;
+  const db = database();
+  await db.batch(additions.map(input => db.prepare(`INSERT OR IGNORE INTO charging_sessions
+    (id, owner_email, charged_at, location_type, location_name, energy_kwh, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(
+      input.id,
+      ownerEmail,
+      new Date(input.chargedAt).getTime(),
+      input.locationType,
+      input.locationName,
+      input.energyKwh,
+      Date.now(),
+    )));
+  return additions.length;
+}
+
 export async function deleteChargingSession(ownerEmail: string, id: string) {
   await ensureTable();
   await database().prepare("DELETE FROM charging_sessions WHERE owner_email = ? AND id = ?")
@@ -98,4 +129,12 @@ function toSession(row: SessionRow): ChargingSession {
 
 function sessionKey(session: Omit<ChargingSession, "id">) {
   return `${new Date(session.chargedAt).getTime()}|${session.locationType}|${session.locationName}|${session.energyKwh}`;
+}
+
+function likelySameChargingSession(stored: ChargingSession, incoming: ChargingSession) {
+  if (stored.id.startsWith("myskoda:")) return false;
+  const sameDay = COPENHAGEN_DAY_FORMAT.format(new Date(stored.chargedAt))
+    === COPENHAGEN_DAY_FORMAT.format(new Date(incoming.chargedAt));
+  const toleranceKwh = Math.max(1, stored.energyKwh * 0.25);
+  return sameDay && Math.abs(stored.energyKwh - incoming.energyKwh) <= toleranceKwh;
 }

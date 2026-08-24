@@ -2,7 +2,10 @@ const CLIENT_ID = "7f045eee-7003-4379-9968-9355ed2adb06@apps_vw-dilab_com";
 const REDIRECT_URI = "myskoda://redirect/login/";
 const IDENTITY_BASE = "https://identity.vwgroup.io";
 const API_BASE = "https://mysmob.api.connect.skoda-auto.cz";
+const CHARGING_API = "https://prod.emea.mobile.charging.cariad.digital/charging_statistics";
 const SCOPE = "address badge birthdate cars driversLicense dealers email mileage mbb nationalIdentifier openid phone profession profile vin";
+const MAX_CHARGING_RESPONSE_BYTES = 5_000_000;
+const MYSKODA_TIMEOUT_MS = 15_000;
 
 export type MySkodaSession = {
   accessToken: string;
@@ -11,6 +14,14 @@ export type MySkodaSession = {
 };
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export type MySkodaChargingSession = {
+  id: string;
+  chargedAt: string;
+  locationType: "home" | "public";
+  locationName: string;
+  energyKwh: number;
+};
 
 export async function loginMySkoda(email: string, password: string): Promise<MySkodaSession> {
   const jar = new CookieJar();
@@ -64,11 +75,7 @@ export async function refreshMySkoda(refreshToken: string): Promise<MySkodaSessi
 }
 
 export async function getMySkodaSnapshot(session: MySkodaSession) {
-  const garage = await apiGet("/api/v2/garage?connectivityGenerations=MOD1&connectivityGenerations=MOD2&connectivityGenerations=MOD3&connectivityGenerations=MOD4", session.accessToken);
-  const vehicles = objectValue(garage)?.vehicles;
-  const vehicle = Array.isArray(vehicles) ? objectValue(vehicles[0]) : null;
-  const vin = stringValue(vehicle?.vin) ?? findString(garage, ["vin"]);
-  if (!vin) throw new Error("Der blev ikke fundet en bil på din MyŠkoda-konto");
+  const { garage, vehicle, vin } = await getFirstVehicle(session.accessToken);
 
   const [charging, drivingRange, maintenanceReport, health, trips] = await Promise.all([
     apiGet(`/api/v1/charging/${encodeURIComponent(vin)}`, session.accessToken),
@@ -111,9 +118,201 @@ export async function getMySkodaSnapshot(session: MySkodaSession) {
   };
 }
 
+export async function getMySkodaChargingHistory(
+  session: MySkodaSession,
+  startedAfter: Date,
+  startedBefore: Date,
+): Promise<MySkodaChargingSession[]> {
+  const { vin } = await getFirstVehicle(session.accessToken);
+  const response = await fetch(CHARGING_API, {
+    method: "POST",
+    signal: AbortSignal.timeout(MYSKODA_TIMEOUT_MS),
+    headers: {
+      "Accept-Language": "en-US",
+      Authorization: `Bearer ${session.accessToken}`,
+      "Content-Type": "application/json",
+      "X-Api-Version": "1",
+      "X-Brand": "skoda",
+      "X-Device-Timezone": "GMT",
+    },
+    body: JSON.stringify({
+      startedAfter: isoDate(startedAfter),
+      startedBefore: isoDate(startedBefore),
+      selectedFilterOptions: [{ filterType: "VEHICLE", vin }],
+      capabilities: [],
+      fetchFilterOptions: true,
+      isActiveSessionsEnabled: true,
+      isExportEnabled: true,
+    }),
+  });
+  if (!response.ok) throw new Error(`MyŠkoda-ladehistorik kunne ikke hentes (${response.status})`);
+  const payload = await readJsonLimited(response, MAX_CHARGING_RESPONSE_BYTES);
+  return parseChargingStatistics(payload);
+}
+
+async function getFirstVehicle(accessToken: string) {
+  const garage = await apiGet("/api/v2/garage?connectivityGenerations=MOD1&connectivityGenerations=MOD2&connectivityGenerations=MOD3&connectivityGenerations=MOD4", accessToken);
+  const vehicles = objectValue(garage)?.vehicles;
+  const vehicle = Array.isArray(vehicles) ? objectValue(vehicles[0]) : null;
+  const vin = stringValue(vehicle?.vin) ?? findString(garage, ["vin"]);
+  if (!vin) throw new Error("Der blev ikke fundet en bil på din MyŠkoda-konto");
+  return { garage, vehicle, vin };
+}
+
+function parseChargingStatistics(payload: JsonValue): MySkodaChargingSession[] {
+  const root = objectValue(payload);
+  if (!root) return [];
+  const csvTimes = parseChargingCsv(stringValue(root.csvFile));
+  const sections = Array.isArray(root.monthSections) ? root.monthSections : [];
+  const sessions: MySkodaChargingSession[] = [];
+
+  for (const sectionValue of sections) {
+    const section = objectValue(sectionValue);
+    const entries = section && Array.isArray(section.entries) ? section.entries : [];
+    for (const entryValue of entries) {
+      const entry = objectValue(entryValue);
+      const details = objectValue(entry?.details);
+      if (!entry || !details || details.isActiveSession === true) continue;
+      const sessionId = stringValue(details.sessionId) ?? stringValue(entry.id);
+      const csv = sessionId ? csvTimes.get(sessionId) : undefined;
+      const chargedAt = csv?.startedAt
+        ?? parseChargingDate(stringValue(details.formattedChargingStartTime))
+        ?? parseChargingDate(stringValue(entry.title));
+      const energyKwh = parseEnergyKwh(
+        stringValue(details.formattedTotalEnergy)
+        ?? stringValue(entry.primaryValue)
+        ?? stringValue(entry.secondaryValue),
+      );
+      if (!chargedAt || energyKwh == null || energyKwh <= 0) continue;
+      const powerType = (stringValue(details.chargingPowerType) ?? "AC").toUpperCase();
+      const isPublic = powerType === "DC";
+      const stableId = sessionId
+        ? `myskoda:${sessionId}`
+        : `myskoda:${chargedAt.getTime()}:${energyKwh.toFixed(3)}:${powerType}`;
+      sessions.push({
+        id: stableId,
+        chargedAt: chargedAt.toISOString(),
+        locationType: isPublic ? "public" : "home",
+        locationName: isPublic
+          ? "MyŠkoda · DC-opladning"
+          : "MyŠkoda · AC-opladning (formodet hjemme)",
+        energyKwh,
+      });
+    }
+  }
+  return sessions;
+}
+
+function parseChargingCsv(encoded: string | null) {
+  const records = new Map<string, { startedAt: Date }>();
+  if (!encoded) return records;
+  try {
+    const binary = atob(encoded);
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    const rows = parseCsv(new TextDecoder().decode(bytes));
+    const header = rows[0]?.map(value => value.trim().toLowerCase()) ?? [];
+    const sessionIndex = header.indexOf("session id");
+    const startedIndex = header.indexOf("started on");
+    if (sessionIndex < 0 || startedIndex < 0) return records;
+    rows.slice(1).forEach(row => {
+      const sessionId = row[sessionIndex]?.trim();
+      const startedAt = parseChargingDate(row[startedIndex]);
+      if (sessionId && startedAt) records.set(sessionId, { startedAt });
+    });
+  } catch {
+    return records;
+  }
+  return records;
+}
+
+function parseCsv(value: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === '"') {
+      if (quoted && value[index + 1] === '"') { field += '"'; index += 1; }
+      else quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      row.push(field); field = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && value[index + 1] === "\n") index += 1;
+      row.push(field); field = "";
+      if (row.some(cell => cell.length > 0)) rows.push(row);
+      row = [];
+    } else field += character;
+  }
+  row.push(field);
+  if (row.some(cell => cell.length > 0)) rows.push(row);
+  return rows;
+}
+
+function parseEnergyKwh(value: string | null) {
+  if (!value) return null;
+  const match = value.replaceAll("\u00a0", " ").match(/-?[\d.,]+/);
+  if (!match) return null;
+  const number = Number(match[0].replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", "."));
+  return Number.isFinite(number) ? number : null;
+}
+
+function parseChargingDate(value: string | null): Date | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (Number.isFinite(timestamp)) return new Date(timestamp);
+  const local = value.match(/(\d{1,2})[./-](\d{1,2})[./-](\d{4})[^\d]+(\d{1,2}):(\d{2})/);
+  if (!local) return null;
+  const [, day, month, year, hour, minute] = local;
+  const normalized = copenhagenDate(Number(year), Number(month), Number(day), Number(hour), Number(minute));
+  return Number.isNaN(normalized.getTime()) ? null : normalized;
+}
+
+function copenhagenDate(year: number, month: number, day: number, hour: number, minute: number) {
+  const guess = Date.UTC(year, month - 1, day, hour, minute);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Copenhagen",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(guess));
+  const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find(part => part.type === type)?.value ?? 0);
+  const represented = Date.UTC(value("year"), value("month") - 1, value("day"), value("hour"), value("minute"));
+  return new Date(guess - (represented - guess));
+}
+
+async function readJsonLimited(response: Response, maxBytes: number): Promise<JsonValue> {
+  const length = Number(response.headers.get("content-length") ?? 0);
+  if (length > maxBytes) throw new Error("MyŠkoda-ladehistorikken var uventet stor");
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel();
+      throw new Error("MyŠkoda-ladehistorikken var uventet stor");
+    }
+    chunks.push(value);
+  }
+  const joined = new Uint8Array(received);
+  let offset = 0;
+  chunks.forEach(chunk => { joined.set(chunk, offset); offset += chunk.byteLength; });
+  return JSON.parse(new TextDecoder().decode(joined)) as JsonValue;
+}
+
+function isoDate(value: Date) { return value.toISOString().slice(0, 10); }
+
 async function tokenRequest(path: string, payload: Record<string, string>): Promise<MySkodaSession> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
+    signal: AbortSignal.timeout(MYSKODA_TIMEOUT_MS),
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
   });
@@ -128,6 +327,7 @@ async function tokenRequest(path: string, payload: Record<string, string>): Prom
 
 async function apiGet(path: string, accessToken: string): Promise<JsonValue> {
   const response = await fetch(`${API_BASE}${path}`, {
+    signal: AbortSignal.timeout(MYSKODA_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
   });
   if (!response.ok) throw new Error(`MyŠkoda-data kunne ikke hentes (${response.status})`);
@@ -143,7 +343,12 @@ class CookieJar {
     for (let redirectCount = 0; redirectCount < 12; redirectCount += 1) {
       const headers = new Headers(currentInit.headers);
       if (this.cookies.size) headers.set("Cookie", [...this.cookies].map(([key, value]) => `${key}=${value}`).join("; "));
-      const response = await fetch(currentUrl, { ...currentInit, headers, redirect: "manual" });
+      const response = await fetch(currentUrl, {
+        ...currentInit,
+        headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(MYSKODA_TIMEOUT_MS),
+      });
       this.capture(response.headers);
       const locationHeader = response.headers.get("location");
       if (!locationHeader || response.status < 300 || response.status >= 400) return { response, location: locationHeader };

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { getChatGPTUser } from "../../chatgpt-auth";
 import { getVehicleSnapshot } from "./smartcar";
-import { getMySkodaSnapshot, refreshMySkoda } from "./myskoda";
+import { getMySkodaSnapshot, refreshMySkoda, type MySkodaSession } from "./myskoda";
 import { loadCredentials, loadMySkodaSession, saveMySkodaSession } from "./storage";
-import { getDrivingHistory, recordVehicleSnapshot } from "./history";
+import { getDrivingHistory, getLatestVehicleSnapshot, recordVehicleSnapshot } from "./history";
 
 export async function GET() {
   const user = await getChatGPTUser();
@@ -11,16 +11,38 @@ export async function GET() {
   try {
     const mySkodaSession = await loadMySkodaSession(user.email);
     if (mySkodaSession) {
-      const refreshed = await refreshMySkoda(mySkodaSession.refreshToken);
-      await saveMySkodaSession(user.email, refreshed);
-      const snapshot = await getMySkodaSnapshot(refreshed);
-      await recordVehicleSnapshot(user.email, "myskoda", snapshot);
-      const history = await getDrivingHistory(user.email);
-      const vehicle = enrichWithHistory(snapshot, history);
-      return NextResponse.json(
-        { configured: true, connected: true, provider: "myskoda", updatedAt: new Date().toISOString(), vehicle },
-        { headers: { "Cache-Control": "private, no-store" } },
-      );
+      try {
+        const snapshot = await readMySkodaSnapshot(user.email, mySkodaSession);
+        await recordVehicleSnapshot(user.email, "myskoda", snapshot);
+        const history = await getDrivingHistory(user.email);
+        const vehicle = enrichWithHistory(snapshot, history);
+        return NextResponse.json(
+          { configured: true, connected: true, provider: "myskoda", updatedAt: new Date().toISOString(), vehicle },
+          { headers: { "Cache-Control": "private, no-store" } },
+        );
+      } catch (error) {
+        const [cached, history] = await Promise.all([
+          getLatestVehicleSnapshot(user.email),
+          getDrivingHistory(user.email),
+        ]);
+        return NextResponse.json({
+          configured: true,
+          connected: true,
+          provider: "myskoda",
+          stale: true,
+          updatedAt: cached?.capturedAt,
+          error: error instanceof Error ? error.message : "MyŠkoda kunne ikke opdateres lige nu",
+          vehicle: cached ? enrichWithHistory(cached.vehicle, history) : enrichWithHistory({
+            make: "Škoda",
+            model: "Elroq",
+            batteryPercent: null,
+            rangeKm: null,
+            odometerKm: null,
+            dataComplete: false,
+            missingSignals: ["Batteriniveau", "Rækkevidde", "Kilometerstand"],
+          }, history),
+        }, { headers: { "Cache-Control": "private, no-store" } });
+      }
     }
     const credentials = await loadCredentials(user.email);
     if (!credentials) return NextResponse.json({ configured: false, connected: false });
@@ -38,6 +60,16 @@ export async function GET() {
       connected: false,
       error: error instanceof Error ? error.message : "Bildata kunne ikke hentes",
     });
+  }
+}
+
+async function readMySkodaSnapshot(ownerEmail: string, session: MySkodaSession) {
+  try {
+    return await getMySkodaSnapshot(session);
+  } catch {
+    const refreshed = await refreshMySkoda(session.refreshToken);
+    await saveMySkodaSession(ownerEmail, refreshed);
+    return getMySkodaSnapshot(refreshed);
   }
 }
 

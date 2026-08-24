@@ -1,11 +1,12 @@
 import { getVehicleSnapshot } from "../app/api/vehicle/smartcar";
-import { getMySkodaSnapshot, refreshMySkoda } from "../app/api/vehicle/myskoda";
+import { getMySkodaChargingHistory, getMySkodaSnapshot, refreshMySkoda } from "../app/api/vehicle/myskoda";
 import {
   loadCredentials,
   loadMySkodaSession,
   saveMySkodaSession,
 } from "../app/api/vehicle/storage";
 import { recordVehicleSnapshot } from "../app/api/vehicle/history";
+import { importExternalChargingSessions } from "../app/api/charging/storage";
 import {
   hasTomorrowPrices,
   listCurrentPrices,
@@ -41,15 +42,15 @@ export async function runScheduler(env: SchedulerEnv, scheduledAt: Date): Promis
     env.DB.prepare(MONTHLY_TABLE_SQL),
   ]);
 
-  const localHour = Number(new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Copenhagen",
-    hour: "2-digit",
-    hourCycle: "h23",
-  }).format(scheduledAt));
+  const local = zonedParts(scheduledAt, "Europe/Copenhagen");
+  const localHour = local.hour;
 
   const jobs: Promise<void>[] = [];
   if (localHour >= 6 && localHour < 23) {
     jobs.push(runTracked(env.DB, "vehicle-sync", () => syncVehicle(env)));
+  }
+  if ((localHour === 5 || localHour === 23) && local.minute === 0) {
+    jobs.push(runTracked(env.DB, "myskoda-charging-sync", () => syncMySkodaChargingHistory(env, scheduledAt)));
   }
   jobs.push(runTracked(env.DB, "price-sync", () => syncPrices(scheduledAt)));
   jobs.push(runTracked(env.DB, "monthly-summary", () => createPreviousMonthSummary(env, scheduledAt)));
@@ -64,13 +65,38 @@ export async function runScheduler(env: SchedulerEnv, scheduledAt: Date): Promis
   }));
 }
 
+async function syncMySkodaChargingHistory(env: SchedulerEnv, now: Date): Promise<Record<string, unknown>> {
+  const ownerEmail = env.OWNER_EMAIL.trim().toLowerCase();
+  const stored = await loadMySkodaSession(ownerEmail);
+  if (!stored) return { skipped: "myskoda-not-connected" };
+  const start = new Date(now.getTime() - 75 * 24 * 60 * 60 * 1000);
+  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  let activeSession = stored;
+  let sessions;
+  try {
+    sessions = await getMySkodaChargingHistory(activeSession, start, end);
+  } catch {
+    activeSession = await refreshMySkoda(stored.refreshToken);
+    await saveMySkodaSession(ownerEmail, activeSession);
+    sessions = await getMySkodaChargingHistory(activeSession, start, end);
+  }
+  const imported = await importExternalChargingSessions(ownerEmail, sessions);
+  return { found: sessions.length, imported };
+}
+
 async function syncVehicle(env: SchedulerEnv): Promise<Record<string, unknown>> {
   const ownerEmail = env.OWNER_EMAIL.trim().toLowerCase();
   const mySkodaSession = await loadMySkodaSession(ownerEmail);
   if (mySkodaSession) {
-    const refreshed = await refreshMySkoda(mySkodaSession.refreshToken);
-    await saveMySkodaSession(ownerEmail, refreshed);
-    const snapshot = await getMySkodaSnapshot(refreshed);
+    let activeSession = mySkodaSession;
+    let snapshot;
+    try {
+      snapshot = await getMySkodaSnapshot(activeSession);
+    } catch {
+      activeSession = await refreshMySkoda(mySkodaSession.refreshToken);
+      await saveMySkodaSession(ownerEmail, activeSession);
+      snapshot = await getMySkodaSnapshot(activeSession);
+    }
     await recordVehicleSnapshot(ownerEmail, "myskoda", snapshot);
     return { provider: "myskoda", batteryPercent: snapshot.batteryPercent };
   }
