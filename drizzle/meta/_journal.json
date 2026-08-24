@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1786968114410,
+      "tag": "0000_glossy_omega_flight",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786974352449,
+      "tag": "0001_happy_starbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786976985089,
+      "tag": "0002_third_gateway",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786977010505,
+      "tag": "0003_glamorous_spitfire",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786977785614,
+      "tag": "0004_busy_ben_urich",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787240718433,
+      "tag": "0005_overrated_lilandra",
+      "breakpoints": true
+    }
+  ]
+}

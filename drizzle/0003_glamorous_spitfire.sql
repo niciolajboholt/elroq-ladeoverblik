@@ -1,0 +1,1 @@
+CREATE INDEX `vehicle_snapshots_owner_time_idx` ON `vehicle_snapshots` (`owner_email`,`captured_at`);
