@@ -460,7 +460,7 @@ export default function Home() {
   return (
     <main>
       <header className="topbar">
-        <a className="brand" href="#top" aria-label="Elroq Ladeoverblik"><span className="brand-mark"><Icon name="bolt" /></span><span>Elroq<span className="brand-light">blik</span></span></a>
+        <a className="brand" href="#top" aria-label="Elroq Ladeoverblik"><span className="brand-mark" aria-hidden="true" /><span>Elroq<span className="brand-light">blik</span></span></a>
         <nav className="desktop-nav" aria-label="Primær navigation">
           {([['overblik', 'Overblik'], ['ladning', 'Opladning'], ['oekonomi', 'Økonomi'], ['bil', 'Bil']] as [Tab,string][]).map(([id,label]) => <button key={id} aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)} className={tab === id ? "active" : ""}>{label}</button>)}
         </nav>
