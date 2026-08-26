@@ -17,31 +17,7 @@ type SchedulerEnv = CloudflareEnv & {
   SMARTCAR_STORAGE_KEY?: string;
 };
 
-const STATE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS scheduler_state (
-  job_name TEXT PRIMARY KEY NOT NULL,
-  last_attempt_at INTEGER NOT NULL,
-  last_success_at INTEGER,
-  last_error TEXT,
-  details_json TEXT
-)`;
-
-const MONTHLY_TABLE_SQL = `CREATE TABLE IF NOT EXISTS monthly_summaries (
-  owner_email TEXT NOT NULL,
-  month TEXT NOT NULL,
-  total_kwh REAL NOT NULL,
-  home_kwh REAL NOT NULL,
-  public_kwh REAL NOT NULL,
-  session_count INTEGER NOT NULL,
-  generated_at INTEGER NOT NULL,
-  PRIMARY KEY (owner_email, month)
-)`;
-
 export async function runScheduler(env: SchedulerEnv, scheduledAt: Date): Promise<void> {
-  await env.DB.batch([
-    env.DB.prepare(STATE_TABLE_SQL),
-    env.DB.prepare(MONTHLY_TABLE_SQL),
-  ]);
-
   const local = zonedParts(scheduledAt, "Europe/Copenhagen");
   const localHour = local.hour;
 

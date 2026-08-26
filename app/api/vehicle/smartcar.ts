@@ -18,10 +18,12 @@ type SignalResource = {
 };
 type ApiSingle<T> = { data?: T };
 type ApiList<T> = { data?: T[] };
+const SMARTCAR_TIMEOUT_MS = 15_000;
 
 export async function getAccessToken(credentials: SmartcarCredentials) {
   const response = await fetch("https://iam.smartcar.com/oauth2/token", {
     method: "POST",
+    signal: AbortSignal.timeout(SMARTCAR_TIMEOUT_MS),
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "client_credentials",
@@ -86,6 +88,7 @@ async function smartcarGet<T>(path: string, accessToken: string, userId?: string
   if (userId) headers["sc-user-id"] = userId;
   const response = await fetch(`https://vehicle.api.smartcar.com/v3${path}`, {
     headers,
+    signal: AbortSignal.timeout(SMARTCAR_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Smartcar-data kunne ikke hentes (${response.status})`);
   return response.json() as Promise<T>;

@@ -26,14 +26,6 @@ interface WorkerExecutionContext {
   };
 }
 
-declare global {
-  var __ELROQ_ENV__: {
-    DB: D1Database;
-    OWNER_EMAIL?: string;
-    SMARTCAR_STORAGE_KEY?: string;
-  } | undefined;
-}
-
 const AUTH_EMAIL_HEADER = "x-elroq-authenticated-user-email";
 const AUTH_NAME_HEADER = "x-elroq-authenticated-user-name";
 
@@ -45,11 +37,6 @@ const AUTH_NAME_HEADER = "x-elroq-authenticated-user-name";
 
 const worker = {
   async fetch(request: Request, env: RuntimeEnv, ctx: WorkerExecutionContext): Promise<Response> {
-    globalThis.__ELROQ_ENV__ = {
-      DB: env.DB,
-      OWNER_EMAIL: env.OWNER_EMAIL,
-      SMARTCAR_STORAGE_KEY: env.SMARTCAR_STORAGE_KEY,
-    };
     const url = new URL(request.url);
 
     if (url.pathname === "/_vinext/image") {
@@ -69,11 +56,6 @@ const worker = {
   },
 
   async scheduled(controller: ScheduledController, env: RuntimeEnv, ctx: WorkerExecutionContext): Promise<void> {
-    globalThis.__ELROQ_ENV__ = {
-      DB: env.DB,
-      OWNER_EMAIL: env.OWNER_EMAIL,
-      SMARTCAR_STORAGE_KEY: env.SMARTCAR_STORAGE_KEY,
-    };
     ctx.waitUntil(runScheduler(env, new Date(controller.scheduledTime)));
   },
 };

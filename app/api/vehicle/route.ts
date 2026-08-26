@@ -73,9 +73,9 @@ async function readMySkodaSnapshot(ownerEmail: string, session: MySkodaSession) 
   }
 }
 
-function enrichWithHistory<T extends { consumptionKwhPer100Km?: number | null; efficiencyKmPerKwh?: number | null }>(vehicle: T, history: Awaited<ReturnType<typeof getDrivingHistory>>) {
-  const directConsumption = vehicle.consumptionKwhPer100Km ?? null;
-  const directEfficiency = vehicle.efficiencyKmPerKwh ?? null;
+function enrichWithHistory<T extends object>(vehicle: T, history: Awaited<ReturnType<typeof getDrivingHistory>>) {
+  const directConsumption = numericProperty(vehicle, "consumptionKwhPer100Km");
+  const directEfficiency = numericProperty(vehicle, "efficiencyKmPerKwh");
   return {
     ...vehicle,
     consumptionKwhPer100Km: directConsumption ?? history.consumptionKwhPer100Km,
@@ -83,4 +83,10 @@ function enrichWithHistory<T extends { consumptionKwhPer100Km?: number | null; e
     efficiencySource: directConsumption != null || directEfficiency != null ? "vehicle" : history.status === "estimated" ? "estimated_history" : "collecting",
     history,
   };
+}
+
+function numericProperty(value: object, key: string): number | null {
+  if (!(key in value)) return null;
+  const candidate = Reflect.get(value, key);
+  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : null;
 }

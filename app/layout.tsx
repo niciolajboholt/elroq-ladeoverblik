@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Elroq Ladeoverblik",
   description: "Ladeøkonomi, rækkevidde og intelligente ladeprognoser for din Škoda Elroq.",
+  icons: { icon: "/favicon.svg" },
   other: { "codex-preview": "development" },
 };
 

@@ -1,24 +1,4 @@
-declare global {
-  var __ELROQ_ENV__: {
-    DB: D1Database;
-    OWNER_EMAIL?: string;
-    SMARTCAR_STORAGE_KEY?: string;
-  } | undefined;
-}
-
-const SNAPSHOT_TABLE_SQL = `CREATE TABLE IF NOT EXISTS vehicle_snapshots (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  owner_email TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  captured_at INTEGER NOT NULL,
-  battery_percent REAL,
-  range_km REAL,
-  odometer_km REAL,
-  charge_state TEXT
-)`;
-
-const OWNER_TIME_INDEX_SQL = `CREATE INDEX IF NOT EXISTS vehicle_snapshots_owner_time_idx
-  ON vehicle_snapshots (owner_email, captured_at)`;
+import { database } from "../runtime";
 
 export type SnapshotVehicle = {
   batteryPercent?: number | null;
@@ -53,7 +33,6 @@ type LatestSnapshotRow = SnapshotRow & {
 const ELROQ_USABLE_BATTERY_KWH = 59;
 
 export async function recordVehicleSnapshot(ownerEmail: string, provider: string, vehicle: SnapshotVehicle) {
-  await ensureSnapshotTable();
   const latest = await database().prepare(`SELECT captured_at, battery_percent, range_km, odometer_km, charge_state
     FROM vehicle_snapshots WHERE owner_email = ? ORDER BY captured_at DESC LIMIT 1`)
     .bind(ownerEmail).first<{ captured_at: number; battery_percent: number | null; range_km: number | null; odometer_km: number | null; charge_state: string | null }>();
@@ -83,7 +62,6 @@ export async function recordVehicleSnapshot(ownerEmail: string, provider: string
 }
 
 export async function getDrivingHistory(ownerEmail: string): Promise<DrivingHistory> {
-  await ensureSnapshotTable();
   const result = await database().prepare(`SELECT captured_at, battery_percent, odometer_km
     FROM vehicle_snapshots WHERE owner_email = ? ORDER BY captured_at ASC LIMIT 1000`)
     .bind(ownerEmail).all<SnapshotRow>();
@@ -117,7 +95,6 @@ export async function getDrivingHistory(ownerEmail: string): Promise<DrivingHist
 }
 
 export async function getLatestVehicleSnapshot(ownerEmail: string) {
-  await ensureSnapshotTable();
   const row = await database().prepare(`SELECT provider, captured_at, battery_percent, range_km, odometer_km, charge_state
     FROM vehicle_snapshots WHERE owner_email = ? ORDER BY captured_at DESC LIMIT 1`)
     .bind(ownerEmail).first<LatestSnapshotRow>();
@@ -140,20 +117,6 @@ export async function getLatestVehicleSnapshot(ownerEmail: string) {
       ].filter((value): value is string => value !== null),
     },
   };
-}
-
-async function ensureSnapshotTable() {
-  const db = database();
-  await db.batch([
-    db.prepare(SNAPSHOT_TABLE_SQL),
-    db.prepare(OWNER_TIME_INDEX_SQL),
-  ]);
-}
-
-function database() {
-  const db = globalThis.__ELROQ_ENV__?.DB;
-  if (!db) throw new Error("Databasen er ikke tilgængelig");
-  return db;
 }
 
 function finiteOrNull(value: number | null | undefined) {

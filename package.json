@@ -10,10 +10,17 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vite",
     "build": "bash scripts/build-verified.sh",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && npm run test:unit && npm run test:render",
+    "test:unit": "node --test tests/charging-matching.test.mjs tests/provider-score.test.mjs",
+    "test:render": "node --import ./tests/register-cloudflare.mjs tests/rendered-html.test.mjs",
+    "typecheck": "tsc --noEmit --incremental false",
+    "check": "npm run typecheck && npm run lint && npm test",
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
+    "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
+    "db:migrate:local": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler d1 migrations apply elroq-ladeoverblik --local",
+    "db:migrate:remote": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler d1 migrations apply elroq-ladeoverblik --remote",
+    "deploy:dry-run": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler deploy --dry-run"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

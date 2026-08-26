@@ -19,9 +19,9 @@ export const vehicleSnapshots = sqliteTable("vehicle_snapshots", {
   ownerEmail: text("owner_email").notNull(),
   provider: text("provider").notNull(),
   capturedAt: integer("captured_at", { mode: "timestamp_ms" }).notNull(),
-  batteryPercent: integer("battery_percent"),
-  rangeKm: integer("range_km"),
-  odometerKm: integer("odometer_km"),
+  batteryPercent: real("battery_percent"),
+  rangeKm: real("range_km"),
+  odometerKm: real("odometer_km"),
   chargeState: text("charge_state"),
 }, (table) => [
   index("vehicle_snapshots_owner_time_idx").on(table.ownerEmail, table.capturedAt),

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { Icon } from "./components/icon";
+import { calculateProviderMatchScore } from "./domain/provider-score";
 
 type Tab = "overblik" | "ladning" | "oekonomi" | "bil";
 
@@ -72,11 +74,6 @@ const SPIRII_SOURCE = "https://spiriihelp.zendesk.com/hc/da/articles/15328005885
 const CIRCLE_K_SOURCE = "https://www.circlek.dk/opladning";
 const TESLA_SOURCE = "https://www.tesla.com/da_dk/supercharger";
 
-function Icon({ name }: { name: "car" | "bolt" | "wallet" | "home" | "pin" | "leaf" | "arrow" | "plus" }) {
-  const icons = { car: "◆", bolt: "ϟ", wallet: "◫", home: "⌂", pin: "●", leaf: "❧", arrow: "→", plus: "+" };
-  return <span aria-hidden="true">{icons[name]}</span>;
-}
-
 export default function Home() {
   const [tab, setTab] = useState<Tab>("overblik");
   const [departure, setDeparture] = useState("06:45");
@@ -122,6 +119,31 @@ export default function Home() {
     } catch { /* En ugyldig lokal indstilling ignoreres. */ }
     return () => { if (timer) clearTimeout(timer); };
   }, []);
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const savedPlan = window.localStorage.getItem("elroq-charge-plan") === "true";
+      const savedPriceWatch = window.localStorage.getItem("elroq-price-watch") === "true";
+      timer = setTimeout(() => {
+        setPlanned(savedPlan);
+        setPriceAlerts(savedPriceWatch);
+      }, 0);
+    } catch { /* Browseren tillader ikke lokal lagring. */ }
+    return () => { if (timer) clearTimeout(timer); };
+  }, []);
+
+  function togglePlanned() {
+    const next = !planned;
+    setPlanned(next);
+    try { window.localStorage.setItem("elroq-charge-plan", String(next)); } catch { /* Indstillingen gælder kun denne visning. */ }
+  }
+
+  function togglePriceAlerts() {
+    const next = !priceAlerts;
+    setPriceAlerts(next);
+    try { window.localStorage.setItem("elroq-price-watch", String(next)); } catch { /* Indstillingen gælder kun denne visning. */ }
+  }
 
   function storeCustomProviders(next: CustomProvider[]) {
     setCustomProviders(next);
@@ -407,7 +429,10 @@ export default function Home() {
       return { ...plan, totalCost, equivalentMonthlyCost: totalCost / periodMonths, effectivePrice: totalCost / safeTotal };
     });
     const lowestCost = Math.min(...costed.map((plan) => plan.totalCost));
-    return costed.map((plan) => ({ ...plan, matchScore: Math.min(100, Math.round((lowestCost / Math.max(plan.totalCost, 1)) * 55 + plan.network.dk * 4 + plan.network.europe * 3 + plan.network.convenience * 2.5)) })).sort((a, b) => a.totalCost - b.totalCost);
+    return costed.map((plan) => ({
+      ...plan,
+      matchScore: calculateProviderMatchScore(lowestCost, plan.totalCost, plan.network),
+    })).sort((a, b) => a.totalCost - b.totalCost);
   }, [automaticHomePriceDkk, cleverMonthlyDkk, comparisonBasis, customProviders]);
   const cleverComparison = providerComparisons.find((plan) => plan.id === "clever");
   const cheapestProvider = providerComparisons[0];
@@ -437,14 +462,14 @@ export default function Home() {
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Elroq Ladeoverblik"><span className="brand-mark"><Icon name="bolt" /></span><span>Elroq<span className="brand-light">blik</span></span></a>
         <nav className="desktop-nav" aria-label="Primær navigation">
-          {([['overblik', 'Overblik'], ['ladning', 'Opladning'], ['oekonomi', 'Økonomi'], ['bil', 'Bil']] as [Tab,string][]).map(([id,label]) => <button key={id} onClick={() => setTab(id)} className={tab === id ? "active" : ""}>{label}</button>)}
+          {([['overblik', 'Overblik'], ['ladning', 'Opladning'], ['oekonomi', 'Økonomi'], ['bil', 'Bil']] as [Tab,string][]).map(([id,label]) => <button key={id} aria-current={tab === id ? "page" : undefined} onClick={() => setTab(id)} className={tab === id ? "active" : ""}>{label}</button>)}
         </nav>
-        <button className="profile" aria-label="Profil for Nicolaj"><span>NB</span><span className="status-dot" /></button>
+        <div className="profile" aria-label="Nicolaj er logget ind"><span>NB</span><span className="status-dot" /></div>
       </header>
 
       <div className="page" id="top">
         <section className="welcome"><div><p className="eyebrow">{today}</p><h1>{greeting}, Nicolaj</h1><p className="subline">Elpriser leveres af Energinet. {vehicleState.connected && vehicleState.vehicle?.dataComplete ? "Bildata hentes direkte fra din bil." : vehicleState.connected ? "Bilforbindelsen er aktiv; datatilladelser afventer." : "Bildata er fortsat demo."}</p></div><div className={`demo-pill ${priceState === "live" ? "live-data" : ""}`}><span /> {priceState === "live" ? "LIVE PRISER" : priceState === "loading" ? "HENTER PRISER" : "PRIS-DEMO"}</div></section>
-        {priceAlerts && tab === "overblik" && <div className="price-watch-banner"><span>●</span><div><strong>Prisvagten følger natten</strong><p>Bedste fundne ladevindue er {cheapestWindow.start}–{cheapestWindow.end}. Appen viser beskeden, når du åbner dashboardet.</p></div><button onClick={() => setPriceAlerts(false)}>Slå fra</button></div>}
+        {priceAlerts && tab === "overblik" && <div className="price-watch-banner"><span>●</span><div><strong>Prisoverblikket er gemt</strong><p>Bedste fundne ladevindue er {cheapestWindow.start}–{cheapestWindow.end}. Du ser den opdaterede anbefaling, når dashboardet åbnes.</p></div><button onClick={togglePriceAlerts}>Slå fra</button></div>}
 
         {tab === "overblik" && <>
           <section className="hero-grid">
@@ -459,8 +484,8 @@ export default function Home() {
               <div className="time-window"><div><span>Bedste ladevindue</span><strong>{cheapestWindow.start}–{cheapestWindow.end}</strong></div><div className="save">{priceState === "live" ? "BEREGNET LIVE" : "PRIS-ESTIMAT"}</div></div>
               <div className="charge-forecast"><span>Forventet behov <strong>{formatNumber(requiredChargeKwh, 1)} kWh</strong></span><span>Estimeret elpris <strong>{formatCurrency(estimatedChargeCost)}</strong></span></div>
               <div className="plan-row"><label>Afgang<input aria-label="Afgangstid" type="time" value={departure} onChange={e => setDeparture(e.target.value)} /></label><label>Mål<select aria-label="Lademål" value={target} onChange={e => setTarget(Number(e.target.value))}><option>70</option><option>80</option><option>90</option><option>100</option></select><b>%</b></label></div>
-              <button className={planned ? "primary planned" : "primary"} onClick={() => setPlanned(!planned)}>{planned ? "✓ Ladeplan gemt" : "Planlæg intelligent opladning"}</button>
-              <button className={`alert-toggle ${priceAlerts ? "active" : ""}`} onClick={() => setPriceAlerts(!priceAlerts)}>{priceAlerts ? "● Prisvagt aktiv" : "○ Aktivér prisvagt i appen"}</button>
+              <button className={planned ? "primary planned" : "primary"} onClick={togglePlanned}>{planned ? "✓ Ladeforslag gemt" : "Gem dette ladeforslag"}</button>
+              <button className={`alert-toggle ${priceAlerts ? "active" : ""}`} onClick={togglePriceAlerts}>{priceAlerts ? "● Prisoverblik gemt" : "○ Gem prisoverblik i appen"}</button>
               <p className="fine"><Icon name="leaf" /> Laveste pris og CO₂-aftryk prioriteres</p>
             </article>
           </section>
@@ -550,7 +575,7 @@ export default function Home() {
         </section>}
 
         {tab === "bil" && <section className="tab-page vehicle-connect-page">
-          <div><p className="eyebrow">BILFORBINDELSE</p><h1>Forbind din Škoda Elroq gratis</h1><p className="subline">Direkte, skrivebeskyttet adgang via din MyŠkoda-konto — uden Smartcar-abonnement og uden en Windows-pc.</p></div>
+          <div><p className="eyebrow">BILFORBINDELSE</p><h1>Forbind din Škoda Elroq gratis</h1><p className="subline">Skrivebeskyttet adgang via din private Elroqblik Worker og MyŠkoda — uden Smartcar-abonnement og uden en Windows-pc.</p></div>
           <div className="connect-layout">
             <article className="connect-card">
               <div className={`connection-orb ${vehicleState.provider === "myskoda" && vehicleState.connected ? "connected" : ""}`}><Icon name="car" /></div>
@@ -564,7 +589,7 @@ export default function Home() {
                 </> : vehicleLoading ? <div className="connection-loading" role="status"><span /><strong>Kontrollerer MyŠkoda-forbindelsen…</strong><small>Det kan tage nogle sekunder, hvis bilen eller MyŠkoda er i dvale.</small></div> : vehicleLoadError ? <div className="connection-retry" role="alert"><p className="eyebrow">MIDLERTIDIG FORBINDELSESFEJL</p><h2>Din forbindelse er ikke blevet slettet</h2><p>{vehicleLoadError}</p><button className="secondary" type="button" onClick={refreshVehicle}>Prøv igen</button></div> : <>
                   <p className="eyebrow">GRATIS · ANBEFALET</p><h2>Log ind én gang med MyŠkoda</h2>
                   <form className="credential-form" onSubmit={connectMySkoda} autoComplete="off">
-                    <p>Oplysningerne sendes direkte fra dit private dashboard til Volkswagens login. Adgangskoden bruges kun til at oprette forbindelsen og bliver ikke gemt.</p>
+                    <p>Din adgangskode behandles kortvarigt af din private Elroqblik Worker og sendes krypteret videre til Volkswagens login. Den bruges kun til at oprette forbindelsen og bliver ikke gemt.</p>
                     <label>MyŠkoda e-mail<input required type="email" value={mySkodaEmail} onChange={event => setMySkodaEmail(event.target.value)} placeholder="Din MyŠkoda e-mail" autoCapitalize="none" spellCheck={false} autoComplete="username" /></label>
                     <label>MyŠkoda adgangskode<input required type="password" value={mySkodaPassword} onChange={event => setMySkodaPassword(event.target.value)} placeholder="Din MyŠkoda adgangskode" autoComplete="current-password" /></label>
                     <button className="connect-button" disabled={setupState === "saving"} type="submit">{setupState === "saving" ? "Forbinder sikkert…" : "Forbind gratis med MyŠkoda"} <Icon name="arrow" /></button>
@@ -580,7 +605,7 @@ export default function Home() {
         </section>}
       </div>
 
-      <nav className="mobile-nav" aria-label="Mobilnavigation"><button className={tab === "overblik" ? "active" : ""} onClick={() => setTab("overblik")}><Icon name="home" /><span>Overblik</span></button><button className={tab === "ladning" ? "active" : ""} onClick={() => setTab("ladning")}><Icon name="bolt" /><span>Opladning</span></button><button className={tab === "oekonomi" ? "active" : ""} onClick={() => setTab("oekonomi")}><Icon name="wallet" /><span>Økonomi</span></button><button className={tab === "bil" ? "active" : ""} onClick={() => setTab("bil")}><Icon name="car" /><span>Bil</span></button></nav>
+      <nav className="mobile-nav" aria-label="Mobilnavigation"><button aria-current={tab === "overblik" ? "page" : undefined} className={tab === "overblik" ? "active" : ""} onClick={() => setTab("overblik")}><Icon name="home" /><span>Overblik</span></button><button aria-current={tab === "ladning" ? "page" : undefined} className={tab === "ladning" ? "active" : ""} onClick={() => setTab("ladning")}><Icon name="bolt" /><span>Opladning</span></button><button aria-current={tab === "oekonomi" ? "page" : undefined} className={tab === "oekonomi" ? "active" : ""} onClick={() => setTab("oekonomi")}><Icon name="wallet" /><span>Økonomi</span></button><button aria-current={tab === "bil" ? "page" : undefined} className={tab === "bil" ? "active" : ""} onClick={() => setTab("bil")}><Icon name="car" /><span>Bil</span></button></nav>
     </main>
   );
 }
